@@ -12,29 +12,38 @@ const (
 )
 
 func main() {
-	err := takeOrder()
+	nc, err := nats.Connect(nats.DefaultURL)
 	if err != nil {
 		panic(err)
 	}
-}
-
-func takeOrder() error {
-	nc, err := nats.Connect(nats.DefaultURL)
-	if err != nil {
-		return err
-	}
 	js, err := nc.JetStream()
 	if err != nil {
-		return err
+		panic(err)
 	}
+	go func() {
+		err := takeOrder(js)
+		if err != nil {
+			panic(err)
+		}
+	}()
 
+	go func() {
+		err := processPizza(js)
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	select {}
+}
+
+func takeOrder(js nats.JetStreamContext) error {
 	strInfo, err := js.AddStream(&nats.StreamConfig{
 		Name:        "ORDERS",
 		Description: "Take order for pizza from customer",
 		Subjects:    []string{"ORDERS.*"},
 	})
 	if err != nil {
-		fmt.Println("error1")
 		return err
 	}
 
@@ -74,5 +83,45 @@ func takeOrder() error {
 			return err
 		}
 		fmt.Printf("Order " + string(msgs[0].Data) + " received\n")
+		natsMsg := &nats.Msg{
+			Subject: "PROCESS.PIZZA",
+			Data:    msgs[0].Data,
+		}
+		js.PublishMsg(natsMsg)
 	}
+}
+
+func processPizza(js nats.JetStreamContext) error {
+	_, err := js.AddStream(&nats.StreamConfig{
+		Name:        "PROCESS",
+		Description: "Take order for pizza from customer",
+		Subjects:    []string{"PROCESS.PIZZA"},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
+		fmt.Println("Oven 1 is preparing pizza " + string(msg.Data))
+		msg.Ack()
+	}, nats.ManualAck())
+	if err != nil {
+		return err
+	}
+
+	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
+		fmt.Println("Oven 2 is preparing pizza " + string(msg.Data))
+		msg.Ack()
+	}, nats.ManualAck())
+	if err != nil {
+		return err
+	}
+
+	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
+		fmt.Println("Oven 3 is preparing pizza " + string(msg.Data))
+		msg.Ack()
+	}, nats.ManualAck())
+	if err != nil {
+		return err
+	}
+	return nil
 }
