@@ -2,14 +2,14 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
-const (
-	Timeout = 5 * time.Second
-)
+var Booked = make(map[string]int)
+var locker = sync.RWMutex{}
 
 func main() {
 	nc, err := nats.Connect(nats.DefaultURL)
@@ -82,7 +82,7 @@ func takeOrder(js nats.JetStreamContext) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Order " + string(msgs[0].Data) + " received\n")
+		fmt.Printf("Order " + string(msgs[0].Data) + " is received\n")
 		natsMsg := &nats.Msg{
 			Subject: "PROCESS.PIZZA",
 			Data:    msgs[0].Data,
@@ -101,24 +101,51 @@ func processPizza(js nats.JetStreamContext) error {
 		return err
 	}
 	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
-		fmt.Println("Oven 1 is preparing pizza " + string(msg.Data))
+		locker.Lock()
+		if Booked["A"] == 1 {
+			locker.Unlock()
+			return
+		}
+		Booked["A"] = 1
+		fmt.Println("Oven A is processing order " + string(msg.Data))
+		time.Sleep(10 * time.Second)
 		msg.Ack()
+		Booked["A"] = 0
+		locker.Unlock()
 	}, nats.ManualAck())
 	if err != nil {
 		return err
 	}
 
 	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
-		fmt.Println("Oven 2 is preparing pizza " + string(msg.Data))
+		locker.Lock()
+		if Booked["B"] == 1 {
+			locker.Unlock()
+			return
+		}
+		Booked["B"] = 1
+		fmt.Println("Oven B is processing order " + string(msg.Data))
+		time.Sleep(10 * time.Second)
 		msg.Ack()
+		Booked["B"] = 0
+		locker.Unlock()
 	}, nats.ManualAck())
 	if err != nil {
 		return err
 	}
 
 	_, err = js.QueueSubscribe("PROCESS.PIZZA", "GROUP", func(msg *nats.Msg) {
-		fmt.Println("Oven 3 is preparing pizza " + string(msg.Data))
+		locker.Lock()
+		if Booked["C"] == 1 {
+			locker.Unlock()
+			return
+		}
+		Booked["C"] = 1
+		fmt.Println("Oven C is processing order " + string(msg.Data))
+		time.Sleep(10 * time.Second)
 		msg.Ack()
+		Booked["C"] = 0
+		locker.Unlock()
 	}, nats.ManualAck())
 	if err != nil {
 		return err
