@@ -34,6 +34,13 @@ func main() {
 		}
 	}()
 
+	go func() {
+		err := deliverPizza(js)
+		if err != nil {
+			panic(err)
+		}
+	}()
+
 	select {}
 }
 
@@ -82,12 +89,15 @@ func takeOrder(js nats.JetStreamContext) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Order " + string(msgs[0].Data) + " is received\n")
+		pretty("Order " + string(msgs[0].Data) + " is received")
 		natsMsg := &nats.Msg{
 			Subject: "PROCESS.PIZZA",
 			Data:    msgs[0].Data,
 		}
-		js.PublishMsg(natsMsg)
+		_, err = js.PublishMsg(natsMsg)
+		if err != nil {
+			return err
+		}
 	}
 }
 
@@ -107,11 +117,12 @@ func processPizza(js nats.JetStreamContext) error {
 			return
 		}
 		Booked["A"] = 1
-		fmt.Println("Oven A is processing order " + string(msg.Data))
+		pretty("Oven A is processing order " + string(msg.Data))
 		time.Sleep(10 * time.Second)
 		msg.Ack()
 		Booked["A"] = 0
 		locker.Unlock()
+		notifyDeliveryOrPanic(js, msg)
 	}, nats.ManualAck())
 	if err != nil {
 		return err
@@ -124,11 +135,12 @@ func processPizza(js nats.JetStreamContext) error {
 			return
 		}
 		Booked["B"] = 1
-		fmt.Println("Oven B is processing order " + string(msg.Data))
+		pretty("Oven B is processing order " + string(msg.Data))
 		time.Sleep(10 * time.Second)
 		msg.Ack()
 		Booked["B"] = 0
 		locker.Unlock()
+		notifyDeliveryOrPanic(js, msg)
 	}, nats.ManualAck())
 	if err != nil {
 		return err
@@ -141,14 +153,71 @@ func processPizza(js nats.JetStreamContext) error {
 			return
 		}
 		Booked["C"] = 1
-		fmt.Println("Oven C is processing order " + string(msg.Data))
+		pretty("Oven C is processing order " + string(msg.Data))
 		time.Sleep(10 * time.Second)
 		msg.Ack()
 		Booked["C"] = 0
 		locker.Unlock()
+		notifyDeliveryOrPanic(js, msg)
 	}, nats.ManualAck())
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func notifyDeliveryOrPanic(js nats.JetStreamContext, msg *nats.Msg) {
+	natsMsg := &nats.Msg{
+		Subject: "ORDERS.DELIVERY",
+		Data:    msg.Data,
+	}
+	_, err := js.PublishMsg(natsMsg)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func deliverPizza(js nats.JetStreamContext) error {
+	conInfo, err := js.AddConsumer("ORDERS", &nats.ConsumerConfig{
+		Durable:       "DELIVERY",
+		AckPolicy:     nats.AckExplicitPolicy,
+		FilterSubject: "ORDERS.DELIVERY",
+	})
+	if err != nil {
+		return err
+	}
+
+	sub, err := js.PullSubscribe(conInfo.Config.FilterSubject, conInfo.Name, nats.BindStream(conInfo.Stream))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err := sub.Unsubscribe()
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	for {
+		msgs, err := sub.Fetch(1)
+		if err == nats.ErrTimeout {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if len(msgs) == 0 {
+			continue
+		}
+		err = msgs[0].Ack()
+		if err != nil {
+			return err
+		}
+		pretty("Order " + string(msgs[0].Data) + " is prepared and ready to serve")
+	}
+}
+
+func pretty(str interface{}) {
+	t := time.Now()
+	fmt.Printf("\n<NATS PIZZA STORE> %q Time:%v\n", str, t.Format("03:04:05 PM 2006-01-02"))
 }
